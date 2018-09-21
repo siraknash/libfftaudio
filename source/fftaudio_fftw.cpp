@@ -45,13 +45,17 @@ FFTAudio::FFTAudio(FuncInitWindowCB window_type, int sample_rate,
 
 FFTAudio::~FFTAudio()
 {
+	m_done = -1;
+	pthread_cond_broadcast(&m_workCond);
+	pthread_mutex_unlock(&m_mutex);
+
 	for(size_t i = 0; i < m_tids.size(); ++i) {
-		::pthread_cancel(m_tids[i]);
+		::pthread_join(m_tids[i], NULL);
 	}
 
+	::pthread_mutex_destroy(&m_mutex);
 	::pthread_cond_destroy(&m_workCond);
 	::pthread_cond_destroy(&m_ctrlCond);
-	::pthread_mutex_destroy(&m_mutex);
 
 	/*
 	 * fftw create/destroy plan are not thread-safe, so plan destroys are wrapped with a static mutex
@@ -192,7 +196,7 @@ FFTAudio::execute(const short * const *data_ptrs)
 	do {
 		// This condition is signaled when each work thread is done
 		pthread_cond_wait(&m_ctrlCond, &m_mutex);
-	} while(m_done < m_tids.size());
+	} while(m_done < (int64_t)m_tids.size());
 
 	m_inputDataPointers = nullptr;
 	return true;
@@ -219,9 +223,13 @@ FFTAudio::_run(int thread_index)
 	do {
 		do {
 			pthread_cond_wait(&m_workCond, &m_mutex);
-		} while(m_inputDataPointers == nullptr);
+		} while(m_inputDataPointers == nullptr && m_done != -1);
 
 		pthread_mutex_unlock(&m_mutex);
+
+		if(m_done == -1) {
+			break;
+		}
 
 		frame_start_idx = this->getPaddedFrameSize() * thread_index;
 
@@ -286,7 +294,7 @@ FFTAudio::_init_threads()
 
 	do {
 		::pthread_cond_wait(&m_ctrlCond, &m_mutex);
-	} while(m_done < m_tids.size());
+	} while(m_done < (int64_t)m_tids.size());
 
 	return FFTA_SUCCESS;
 }
